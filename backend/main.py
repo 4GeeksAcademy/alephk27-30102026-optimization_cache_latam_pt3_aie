@@ -1,22 +1,96 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
+from collections import Counter
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from threading import Lock
+from typing import Literal
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 DATA_FILE = Path(__file__).with_name("books.json")
 _data_lock = Lock()
+logger = logging.getLogger(__name__)
+
+
+class TelemetryContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    app_version: str = Field(max_length=40)
+    page_path: str | None = Field(max_length=300)
+    referrer: str | None = Field(default=None, max_length=300)
+    viewport_width: int | None = Field(default=None, ge=0)
+    os: str | None = Field(default=None, max_length=80)
+    language: str | None = Field(default=None, max_length=35)
+
+
+class TelemetryMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: int = Field(ge=1)
+    batch_id: UUID
+    sent_at: datetime
+    emitter: str = Field(max_length=120)
+    locale: str | None = Field(default=None, max_length=35)
+
+
+class PageViewedProperties(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(max_length=300)
+    page: Literal["catalog", "book_detail"]
+    book_id: int | None = Field(default=None, ge=1)
+
+
+class AppErrorProperties(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    error_scope: Literal["render", "data_load", "route", "network"]
+    message: str = Field(max_length=500)
+    path: str | None = Field(default=None, max_length=300)
+
+
+class TelemetryEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: UUID
+    timestamp: datetime
+    session_id: UUID
+    user_id: str | None
+    event_type: Literal["page_viewed", "app_error"]
+    schema_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+    request_id: UUID
+    source: Literal["frontend"]
+    context: TelemetryContext
+    metadata: TelemetryMetadata
+    properties: PageViewedProperties | AppErrorProperties
+
+    @model_validator(mode="after")
+    def properties_match_event_type(self):
+        expected = PageViewedProperties if self.event_type == "page_viewed" else AppErrorProperties
+        if not isinstance(self.properties, expected):
+            raise ValueError("properties no coincide con event_type")
+        if self.timestamp.tzinfo is None or self.metadata.sent_at.tzinfo is None:
+            raise ValueError("timestamp y sent_at deben incluir zona horaria")
+        return self
+
+
+class TelemetryBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    events: list[TelemetryEvent] = Field(min_length=1, max_length=50)
 
 
 class BookCreate(BaseModel):
@@ -68,6 +142,17 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.post("/events")
+def ingest_events(batch: TelemetryBatch) -> dict:
+    event_types = Counter(event.event_type for event in batch.events)
+    logger.info(
+        "Telemetry batch accepted: count=%s event_types=%s",
+        len(batch.events),
+        dict(event_types),
+    )
+    return {"accepted": len(batch.events), "event_types": dict(event_types)}
 
 
 @app.get("/books", response_model=list[Book])

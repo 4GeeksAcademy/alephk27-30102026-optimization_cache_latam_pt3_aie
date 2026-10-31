@@ -1,7 +1,24 @@
+import { useEffect, useRef } from 'react'
 import { BookOpen, Boxes } from 'lucide-react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { trackPageView } from '../telemetry'
 
 export function Layout() {
+  const location = useLocation()
+  const lastTrackedLocation = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (lastTrackedLocation.current === location.key) return
+    lastTrackedLocation.current = location.key
+
+    if (location.pathname === '/') {
+      trackPageView(location.pathname, 'catalog')
+      return
+    }
+    const detailMatch = location.pathname.match(/^\/books\/(\d+)$/)
+    if (detailMatch) trackPageView(location.pathname, 'book_detail', Number(detailMatch[1]))
+  }, [location.key, location.pathname])
+
   return (
     <div className="min-h-screen bg-[#f7f7f4] text-[#20231f]">
       <header className="border-b border-[#e8e8e2] bg-[#f7f7f4]/95">

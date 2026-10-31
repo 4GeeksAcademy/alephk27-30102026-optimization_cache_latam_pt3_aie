@@ -3,6 +3,7 @@ import { Plus, Search, X } from 'lucide-react'
 import { getBooks, getStock } from '../api/books'
 import { AddBookForm } from '../components/AddBookForm'
 import { BookCard } from '../components/BookCard'
+import { trackAppError } from '../telemetry'
 import type { Book, StockResult } from '../types'
 
 export function BooksPage() {
@@ -19,7 +20,11 @@ export function BooksPage() {
     setLoading(true)
     setError('')
     try { setBooks(await getBooks()) }
-    catch (err) { setError(err instanceof Error ? err.message : 'No se pudieron cargar los libros.') }
+    catch (err) {
+      const message = err instanceof Error ? err.message : 'No se pudieron cargar los libros.'
+      setError(message)
+      trackAppError('data_load', message)
+    }
     finally { setLoading(false) }
   }
 
@@ -36,7 +41,11 @@ export function BooksPage() {
     setStockError('')
     setStockResult(null)
     try { setStockResult(await getStock(stockId.trim())) }
-    catch (err) { setStockError(err instanceof Error ? err.message : 'No se encontró el stock.') }
+    catch (err) {
+      const message = err instanceof Error ? err.message : 'No se encontró el stock.'
+      setStockError(message)
+      trackAppError('data_load', message)
+    }
   }
 
   return (
